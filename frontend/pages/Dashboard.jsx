@@ -3,45 +3,56 @@ import { useLocation } from 'react-router-dom';
 import { Users, Bookmark, Settings, MessageSquare, User, CheckCircle, XCircle, Clock, Download } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useProjects } from '../context/ProjectContext';
-import { useNotifications } from '../context/NotificationContext';
 import UserAvatar from '../components/UserAvatar';
 import ProfileModal from '../components/ProfileModal';
 import CollaborationSpace from '../components/CollaborationSpace';
 import './Dashboard.css';
-import ProjectCard from '../components/ProjectCard'; // Added import for ProjectCard
+import ProjectCard from '../components/ProjectCard';
 
-// Dashboard component displays the main dashboard UI for authenticated users
 function Dashboard() {
-  // Get current user from AuthContext
   const { user } = useAuth();
-  // Get location for navigation state
   const location = useLocation();
-  // Get all projects and bookmarked projects from ProjectContext
-  const { 
-    projects, 
-    bookmarkedProjects, 
-    applications, 
-    acceptApplication, 
-    rejectApplication, 
-    getReceivedApplications, 
-    getSentApplications 
-  } = useProjects();
-  // Get notification functions
-  const { addAcceptanceNotification, addRejectionNotification } = useNotifications();
-  // State to manage which tab is active: 'bookmarks' or 'applications'
+  const { projects, bookmarkedProjects } = useProjects();
+  
   const [activeTab, setActiveTab] = useState('bookmarks');
-  // State to manage which application sub-tab is active: 'received' or 'sent'
   const [applicationTab, setApplicationTab] = useState('received');
-  // State to track selected user for profile modal
   const [selectedUser, setSelectedUser] = useState(null);
-  // State to track toast notifications
   const [toast, setToast] = useState({ show: false, message: '', type: '' });
-  // State to track collaboration space
   const [showCollaborationSpace, setShowCollaborationSpace] = useState(false);
-  // State to track the active project in collaboration space
   const [activeCollabProject, setActiveCollabProject] = useState(null);
-  // State to track pending collaboration space opening
   const [pendingCollabProjectId, setPendingCollabProjectId] = useState(null);
+  const [applications, setApplications] = useState([]);
+  const [loading, setLoading] = useState(false);
+
+  const apiBaseUrl = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+
+  // Fetch applications from backend
+  useEffect(() => {
+    const fetchApplications = async () => {
+      if (!user?.id) return;
+
+      try {
+        setLoading(true);
+        const response = await fetch(`${apiBaseUrl}/api/applications/received/${user.id}`);
+        const result = await response.json();
+
+        if (result.success && result.data) {
+          const transformedApplications = result.data.map(app => ({
+            ...app,
+            id: app._id || app.id,
+            appliedDate: new Date(app.createdAt).toISOString().split('T')[0]
+          }));
+          setApplications(transformedApplications);
+        }
+      } catch (error) {
+        console.error('Error fetching applications:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchApplications();
+  }, [user?.id]);
 
   // Handle navigation from notifications
   useEffect(() => {
@@ -53,7 +64,6 @@ function Dashboard() {
       if (subTab) {
         setApplicationTab(subTab);
       }
-      // Clear the navigation state to prevent issues on refresh
       window.history.replaceState({}, document.title);
     }
   }, [location.state]);
@@ -61,24 +71,18 @@ function Dashboard() {
   // Handle pending collaboration space opening
   useEffect(() => {
     if (pendingCollabProjectId) {
-      console.log('Looking for project with ID:', pendingCollabProjectId);
-      console.log('Available projects:', projects.map(p => ({ id: p.id, title: p.title, teamMembers: p.teamMembers.length })));
-      
       const updatedProject = projects.find(p => p.id === pendingCollabProjectId);
       if (updatedProject) {
-        console.log('Found updated project:', updatedProject.title, 'with', updatedProject.teamMembers.length, 'team members');
         setActiveCollabProject(updatedProject);
         setShowCollaborationSpace(true);
-        setPendingCollabProjectId(null); // Clear the pending state
-      } else {
-        console.log('Project not found yet, waiting for state update...');
+        setPendingCollabProjectId(null);
       }
     }
   }, [pendingCollabProjectId, projects]);
 
   // Get applications for the current user
-  const receivedApplications = user ? getReceivedApplications(user.id) : [];
-  const sentApplications = user ? getSentApplications(user.id) : [];
+  const receivedApplications = applications.filter(app => applicationTab === 'received');
+  const sentApplications = applications.filter(app => app.applicantId === user?.id);
 
   // Filter applications based on the selected tab
   const filteredApplications = applicationTab === 'received' ? receivedApplications : sentApplications;
@@ -93,80 +97,94 @@ function Dashboard() {
   );
 
   // Function to handle accepting an application
-  const handleAcceptApplication = (applicationId) => {
-    // Find the application
-    const application = applications.find(app => app.id === applicationId);
+  const handleAcceptApplication = async (applicationId) => {
+    const application = applications.find(app => app.id === applicationId || app._id === applicationId);
     
     if (!application) return;
-    
-    // Accept the application using context function
-    const success = acceptApplication(applicationId);
-    
-    if (success) {
-      // Send acceptance notification to the applicant
-      addAcceptanceNotification(
-        application.applicantId,
-        application.projectName,
-        application.position
-      );
-      
-      // Show success toast
-      setToast({
-        show: true,
-        message: `${application.applicantName} has been added to the project`,
-        type: 'success'
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/api/applications/${applicationId}/accept`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        }
       });
-      
-      // Set pending collaboration space opening
-      setPendingCollabProjectId(application.projectId);
-      
-      // Hide toast after delay
-      setTimeout(() => {
-        setToast({ show: false, message: '', type: '' });
-      }, 3000);
+
+      const result = await response.json();
+
+      if (result.success) {
+        // Update application status
+        setApplications(prev => prev.map(app =>
+          (app.id === applicationId || app._id === applicationId) 
+            ? { ...app, status: 'ACCEPTED' } 
+            : app
+        ));
+
+        // Show success toast
+        setToast({
+          show: true,
+          message: `${application.applicantName} has been added to the project`,
+          type: 'success'
+        });
+
+        // Set pending collaboration space opening
+        setPendingCollabProjectId(application.projectId);
+
+        // Hide toast after delay
+        setTimeout(() => {
+          setToast({ show: false, message: '', type: '' });
+        }, 3000);
+      }
+    } catch (error) {
+      console.error('Error accepting application:', error);
     }
   };
 
   // Function to handle rejecting an application
-  const handleRejectApplication = (applicationId) => {
-    // Find the application
-    const application = applications.find(app => app.id === applicationId);
+  const handleRejectApplication = async (applicationId) => {
+    const application = applications.find(app => app.id === applicationId || app._id === applicationId);
     
     if (!application) return;
-    
-    // Reject the application using context function
-    const success = rejectApplication(applicationId);
-    
-    if (success) {
-      // Send rejection notification to the applicant
-      addRejectionNotification(
-        application.applicantId,
-        application.projectName,
-        application.position
-      );
-      
-      // Show toast notification
-      setToast({
-        show: true,
-        message: 'Application has been rejected',
-        type: 'error'
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/api/applications/${applicationId}/reject`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        }
       });
-      
-      // Hide toast after delay
-      setTimeout(() => {
-        setToast({ show: false, message: '', type: '' });
-      }, 2000);
+
+      const result = await response.json();
+
+      if (result.success) {
+        // Update application status
+        setApplications(prev => prev.map(app =>
+          (app.id === applicationId || app._id === applicationId)
+            ? { ...app, status: 'REJECTED' }
+            : app
+        ));
+
+        // Show toast notification
+        setToast({
+          show: true,
+          message: 'Application has been rejected',
+          type: 'error'
+        });
+
+        // Hide toast after delay
+        setTimeout(() => {
+          setToast({ show: false, message: '', type: '' });
+        }, 2000);
+      }
+    } catch (error) {
+      console.error('Error rejecting application:', error);
     }
   };
 
   // Function to handle viewing an applicant's profile
   const handleViewProfile = (applicantId) => {
-    console.log(`Viewing profile for ${applicantId}`);
-    // Find the selected user from applications
     const application = applications.find(app => app.applicantId === applicantId);
     if (application && application.userDetails) {
-      // If viewing from "Sent" section, show current user's profile
-      // If viewing from "Received" section, show applicant's profile
       if (applicationTab === 'sent') {
         setSelectedUser(user);
       } else {
@@ -180,21 +198,13 @@ function Dashboard() {
     setSelectedUser(null);
   };
 
-  // Function to handle sending a message to an applicant
-  const handleSendMessage = (applicantId) => {
-    console.log(`Sending message to ${applicantId}`);
-    // In a real app, this would open a messaging interface
-  };
-
   // Function to handle downloading a resume
   const handleDownloadResume = (resumeUrl, applicantName) => {
-    console.log(`Downloading resume from ${resumeUrl} for ${applicantName}`);
-    // In a real app, this would trigger the file download
-    // For demo purposes, we'll just log it
-    window.open(resumeUrl, '_blank');
+    const fullUrl = `${apiBaseUrl}${resumeUrl}`;
+    window.open(fullUrl, '_blank');
   };
 
-  // Format date to relative time (e.g., "2 days ago")
+  // Format date to relative time
   const getRelativeTime = (dateString) => {
     const date = new Date(dateString);
     const now = new Date();
@@ -207,7 +217,7 @@ function Dashboard() {
     return `${Math.floor(diffInDays / 30)} months ago`;
   };
 
-  // Map user role to display title (match Profile page behavior)
+  // Map user role to display title
   const getRoleDisplayTitle = (role) => {
     const roleMap = {
       'founder': 'The Founder',
@@ -218,7 +228,6 @@ function Dashboard() {
     return roleMap[role] || role || 'Developer';
   };
 
-  // If user is not authenticated, show a message
   if (!user) {
     return (
       <div className="dashboard-container">
@@ -229,23 +238,15 @@ function Dashboard() {
     );
   }
 
-  // Main dashboard layout
   return (
     <div className="dashboard-container">
-      {/* Dashboard header */}
       <header className="dashboard-header">
         <div className="header-content">
           <h1 style={{ color: 'white' }}>Welcome back, {user.name}!</h1>
           <p style={{ color: 'white' }}>Here's what's happening with your projects</p>
         </div>
-        {/* <div className="header-actions">
-          <button className="settings-btn" title="Settings">
-            <Settings size={24} />
-          </button>
-        </div> */}
       </header>
 
-      {/* Dashboard tabs for switching between Bookmarks and Applications */}
       <div className="dashboard-tabs">
         <button
           className={`tab-btn ${activeTab === 'bookmarks' ? 'active' : ''}`}
@@ -261,7 +262,6 @@ function Dashboard() {
         </button>
       </div>
 
-      {/* Main content area */}
       <div className="dashboard-content">
         {activeTab === 'bookmarks' && (
           <div className="projects-content">
@@ -292,7 +292,6 @@ function Dashboard() {
           <div className="applications-content">
             <h3>Application Management</h3>
             
-            {/* Tabs for received and sent applications */}
             <div className="applications-tabs">
               <button 
                 className={`app-tab ${applicationTab === 'received' ? 'active' : ''}`}
@@ -308,12 +307,12 @@ function Dashboard() {
               </button>
             </div>
             
-            {/* Applications list */}
-            {filteredApplications.length > 0 ? (
+            {loading ? (
+              <div className="loading">Loading applications...</div>
+            ) : filteredApplications.length > 0 ? (
               <div className="applications-list">
                 {filteredApplications.map(application => (
                   <div key={application.id} className="application-item">
-                    {/* Applicant info */}
                     <div className="applicant-info">
                       <UserAvatar 
                         user={{ name: application.applicantName }} 
@@ -327,7 +326,6 @@ function Dashboard() {
                       </div>
                     </div>
                     
-                    {/* Application details */}
                     <div className="application-details">
                       <div className="application-project">
                         <p>{application.projectName}</p>
@@ -345,7 +343,6 @@ function Dashboard() {
                       </p>
                     </div>
                     
-                    {/* Status and actions */}
                     <div className="application-status-actions">
                       <div className={`application-status status-${application.status.toLowerCase()}`}>
                         {application.status === 'PENDING' && <Clock size={16} />}
@@ -402,7 +399,6 @@ function Dashboard() {
         )}
       </div>
 
-      {/* Toast notification */}
       {toast.show && (
         <div className={`toast-notification ${toast.type}`}>
           <div className="toast-content">
@@ -414,7 +410,6 @@ function Dashboard() {
         </div>
       )}
       
-      {/* Profile Modal */}
       {selectedUser && (
         <ProfileModal
           user={selectedUser}
@@ -422,7 +417,6 @@ function Dashboard() {
         />
       )}
       
-      {/* Collaboration Space Modal */}
       {showCollaborationSpace && (
         <CollaborationSpace
           activeProject={activeCollabProject}
