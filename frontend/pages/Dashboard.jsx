@@ -33,17 +33,41 @@ function Dashboard() {
 
       try {
         setLoading(true);
-        const response = await fetch(`${apiBaseUrl}/api/applications/received/${user.id}`);
-        const result = await response.json();
+        
+        // Fetch both received and sent applications
+        const [receivedResponse, sentResponse] = await Promise.all([
+          fetch(`${apiBaseUrl}/api/applications/received/${user.id}`),
+          fetch(`${apiBaseUrl}/api/applications/user/${user.id}`)
+        ]);
 
-        if (result.success && result.data) {
-          const transformedApplications = result.data.map(app => ({
+        const receivedResult = await receivedResponse.json();
+        const sentResult = await sentResponse.json();
+
+        const allApplications = [];
+
+        // Process received applications
+        if (receivedResult.success && receivedResult.data) {
+          const receivedApps = receivedResult.data.map(app => ({
             ...app,
             id: app._id || app.id,
-            appliedDate: new Date(app.createdAt).toISOString().split('T')[0]
+            appliedDate: new Date(app.createdAt).toISOString().split('T')[0],
+            isReceived: true
           }));
-          setApplications(transformedApplications);
+          allApplications.push(...receivedApps);
         }
+
+        // Process sent applications
+        if (sentResult.success && sentResult.data) {
+          const sentApps = sentResult.data.map(app => ({
+            ...app,
+            id: app._id || app.id,
+            appliedDate: new Date(app.createdAt).toISOString().split('T')[0],
+            isReceived: false
+          }));
+          allApplications.push(...sentApps);
+        }
+
+        setApplications(allApplications);
       } catch (error) {
         console.error('Error fetching applications:', error);
       } finally {
@@ -52,6 +76,10 @@ function Dashboard() {
     };
 
     fetchApplications();
+    
+    // Poll for new applications every 30 seconds
+    const interval = setInterval(fetchApplications, 30000);
+    return () => clearInterval(interval);
   }, [user?.id]);
 
   // Handle navigation from notifications
@@ -81,8 +109,8 @@ function Dashboard() {
   }, [pendingCollabProjectId, projects]);
 
   // Get applications for the current user
-  const receivedApplications = applications.filter(app => applicationTab === 'received');
-  const sentApplications = applications.filter(app => app.applicantId === user?.id);
+  const receivedApplications = applications.filter(app => app.isReceived === true);
+  const sentApplications = applications.filter(app => app.isReceived === false);
 
   // Filter applications based on the selected tab
   const filteredApplications = applicationTab === 'received' ? receivedApplications : sentApplications;
@@ -182,14 +210,32 @@ function Dashboard() {
   };
 
   // Function to handle viewing an applicant's profile
-  const handleViewProfile = (applicantId) => {
-    const application = applications.find(app => app.applicantId === applicantId);
-    if (application && application.userDetails) {
+  const handleViewProfile = async (application) => {
+    try {
       if (applicationTab === 'sent') {
+        // For sent applications, show current user's profile
         setSelectedUser(user);
       } else {
-        setSelectedUser(application.userDetails);
+        // For received applications, fetch applicant details
+        const response = await fetch(`${apiBaseUrl}/api/applications/${application.id || application._id}`);
+        const result = await response.json();
+        
+        if (result.success && result.data) {
+          const applicantData = result.data.applicantId || result.data.userDetails;
+          setSelectedUser({
+            ...applicantData,
+            name: result.data.applicantName,
+            avatar: result.data.applicantAvatar,
+            title: applicantData?.title || 'Member',
+            bio: applicantData?.bio || '',
+            skills: applicantData?.skills || result.data.skills || [],
+            experiences: applicantData?.experiences || [],
+            education: applicantData?.education || []
+          });
+        }
       }
+    } catch (error) {
+      console.error('Error fetching applicant profile:', error);
     }
   };
 
@@ -354,7 +400,7 @@ function Dashboard() {
                       <div className="application-actions">
                         <button 
                           className="view-profile-btn" 
-                          onClick={() => handleViewProfile(application.applicantId)}
+                          onClick={() => handleViewProfile(application)}
                         >
                           <User size={16} />
                           Profile

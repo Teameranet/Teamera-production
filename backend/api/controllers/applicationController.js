@@ -1,7 +1,6 @@
 import Application from '../../models/Application.js';
 import Project from '../../models/Project.js';
 import User from '../../models/User.js';
-import Dashboard from '../../models/Dashboard.js';
 import Notification from '../../models/Notification.js';
 import {
   successResponse,
